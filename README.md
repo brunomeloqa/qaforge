@@ -58,8 +58,8 @@ npm install
 ### 2. Configurar variáveis de ambiente
 Crie um arquivo `.env.local` na raiz do projeto (ou copie de `.env.example`):
 ```env
-NEXT_PUBLIC_SUPABASE_URL=https://vmoceqizuoplduhrzvzg.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_DUk2UOyhKtPdwZLnCRSDLA_l_GNYPv9
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
 ```
 
 ### 3. Iniciar o servidor de desenvolvimento
