@@ -42,16 +42,22 @@ export default function LoginPage() {
     if (signInError) {
       if (signInError.message.includes('Invalid login credentials')) {
         // Tenta registrar novo usuário se for primeira vez
-        const { error: signUpError } = await supabase.auth.signUp({
+        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
           email,
           password,
         });
 
         if (signUpError) {
           setErrorMessage(signUpError.message);
-        } else {
+        } else if (signUpData.session) {
+          // Usuário criado e logado diretamente (confirmação de email desativada no Supabase)
           router.push('/dashboard');
           router.refresh();
+        } else {
+          // Supabase enviou email de confirmação (confirmação ativada)
+          setInfoMessage(
+            'Conta criada! Verifique seu e-mail corporativo e clique no link de confirmação para acessar o sistema.'
+          );
         }
       } else {
         setErrorMessage(signInError.message);
