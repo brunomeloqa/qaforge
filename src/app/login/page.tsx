@@ -24,8 +24,14 @@ export default function LoginPage() {
     setErrorMessage(null);
     setInfoMessage(null);
 
-    const email = values.email.trim();
+    const email = values.email.trim().toLowerCase();
     const password = values.password || '';
+
+    if (!email.endsWith('@insanemedia.com.br')) {
+      setErrorMessage('Acesso restrito. Utilize seu e-mail corporativo @insanemedia.com.br.');
+      setLoading(false);
+      return;
+    }
 
     // Tentar login com senha; se o usuário ainda não existir ou não tiver senha, tentar signUp direto (onboarding ágil)
     const { error: signInError } = await supabase.auth.signInWithPassword({
@@ -61,7 +67,13 @@ export default function LoginPage() {
   const handleMagicLink = async () => {
     try {
       const values = await form.validateFields(['email']);
-      const email = values.email.trim();
+      const email = values.email.trim().toLowerCase();
+
+      if (!email.endsWith('@insanemedia.com.br')) {
+        setErrorMessage('Acesso restrito. Utilize seu e-mail corporativo @insanemedia.com.br.');
+        return;
+      }
+
       setMagicLinkLoading(true);
       setErrorMessage(null);
 
@@ -159,15 +171,25 @@ export default function LoginPage() {
         >
           <Form.Item
             name="email"
-            label="E-mail Corporativo"
+            label="E-mail Corporativo (@insanemedia.com.br)"
             rules={[
               { required: true, message: 'Por favor, informe seu e-mail corporativo' },
               { type: 'email', message: 'E-mail inválido' },
+              {
+                validator: (_, value) => {
+                  if (!value || value.toLowerCase().endsWith('@insanemedia.com.br')) {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(
+                    new Error('Apenas e-mails com domínio @insanemedia.com.br são aceitos')
+                  );
+                },
+              },
             ]}
           >
             <Input
               prefix={<MailOutlined />}
-              placeholder="seu.email@empresa.com"
+              placeholder="seu.nome@insanemedia.com.br"
               size="large"
             />
           </Form.Item>

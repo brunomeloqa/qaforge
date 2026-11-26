@@ -14,6 +14,7 @@ import {
   BulbFilled,
   MenuUnfoldOutlined,
   MenuFoldOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
 import { usePathname, useRouter } from 'next/navigation';
 import { useTheme } from '@/context/ThemeContext';
@@ -50,6 +51,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       icon: <BranchesOutlined />,
       label: 'Qualidade de Branches',
     },
+    ...(profile?.role === 'admin'
+      ? [
+          {
+            key: '/settings',
+            icon: <SettingOutlined />,
+            label: 'Configurações',
+          },
+        ]
+      : []),
   ];
 
   const handleMenuClick: MenuProps['onClick'] = (e) => {
@@ -68,6 +78,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       disabled: true,
       label: <Text type="secondary">{user?.email}</Text>,
     },
+    ...(profile?.role === 'admin'
+      ? [
+          {
+            key: 'admin-settings',
+            icon: <SettingOutlined />,
+            label: 'Painel Admin',
+            onClick: () => router.push('/settings'),
+          },
+        ]
+      : []),
     {
       type: 'divider',
     },
