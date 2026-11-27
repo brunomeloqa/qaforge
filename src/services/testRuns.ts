@@ -85,7 +85,7 @@ export async function getTestRunById(id: string): Promise<{
       )
     `)
     .eq('test_run_id', id)
-    .order('created_at', { ascending: true });
+    .order('title_snapshot', { ascending: true });
 
   if (itemsError) {
     console.error('Error fetching test run items:', itemsError);
