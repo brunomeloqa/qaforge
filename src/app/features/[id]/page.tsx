@@ -36,8 +36,7 @@ import {
   deleteTestCase,
 } from '@/services/testCases';
 import type { Feature, TestCase, TestPriority } from '@/types/database';
-import PriorityTag from '@/components/testCases/PriorityTag';
-import TestCaseModal from '@/components/testCases/TestCaseModal';
+import PriorityTag from '@/components/testCases/PriorityTag';import TestCaseModal from '@/components/testCases/TestCaseModal';
 import FeatureModal from '@/components/features/FeatureModal';
 import { useAuth } from '@/context/AuthContext';
 import dayjs from 'dayjs';
@@ -126,11 +125,11 @@ export default function FeatureDetailPage() {
     }
   };
 
-  const handleCaseModalSubmit = async (values: { title: string; priority: TestPriority }) => {
+  const handleCaseModalSubmit = async (values: { title: string; priority: TestPriority; tagIds: string[] }) => {
     if (!editingCase) return;
     setCaseSubmitting(true);
     try {
-      const updated = await updateTestCase(editingCase.id, values);
+      const updated = await updateTestCase(editingCase.id, { title: values.title, priority: values.priority, tagIds: values.tagIds });
       setTestCases(testCases.map((c) => (c.id === updated.id ? updated : c)));
       setCaseModalOpen(false);
       message.success('Caso de teste atualizado');

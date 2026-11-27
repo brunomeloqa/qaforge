@@ -19,6 +19,9 @@ import {
   Statistic,
   Input,
   Descriptions,
+  Modal,
+  Form,
+  ColorPicker,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
@@ -31,15 +34,20 @@ import {
   LinkOutlined,
   CheckCircleOutlined,
   GlobalOutlined,
+  TagsOutlined,
+  PlusOutlined,
+  EditOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
 import { getUsers, updateUserRole, deleteUser } from '@/services/users';
-import type { UserProfile, UserRole } from '@/types/database';
+import { getTags, createTag, updateTag, deleteTag } from '@/services/tags';
+import type { UserProfile, UserRole, Tag as TagType } from '@/types/database';
 import dayjs from 'dayjs';
 
 const { Title, Text, Paragraph } = Typography;
 
+type Color = { toHexString: () => string } | string;
 export default function SettingsPage() {
   const { profile, user, loading: authLoading } = useAuth();
   const router = useRouter();
@@ -47,6 +55,14 @@ export default function SettingsPage() {
   const [usersList, setUsersList] = useState<UserProfile[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
+
+  // Tags state
+  const [tagsList, setTagsList] = useState<TagType[]>([]);
+  const [loadingTags, setLoadingTags] = useState(false);
+  const [tagModalOpen, setTagModalOpen] = useState(false);
+  const [editingTag, setEditingTag] = useState<TagType | null>(null);
+  const [tagSubmitting, setTagSubmitting] = useState(false);
+  const [tagForm] = Form.useForm();
 
   const isAdmin = profile?.role === 'admin';
 
@@ -62,9 +78,22 @@ export default function SettingsPage() {
     }
   };
 
+  const loadTags = async () => {
+    setLoadingTags(true);
+    try {
+      const data = await getTags();
+      setTagsList(data);
+    } catch {
+      message.error('Erro ao carregar tags');
+    } finally {
+      setLoadingTags(false);
+    }
+  };
+
   useEffect(() => {
     if (isAdmin) {
       loadUsers();
+      loadTags();
     }
   }, [isAdmin]);
 
@@ -105,7 +134,6 @@ export default function SettingsPage() {
       message.warning('Você não pode excluir o seu próprio perfil de administrador.');
       return;
     }
-
     try {
       await deleteUser(userId);
       setUsersList((prev) => prev.filter((u) => u.id !== userId));
@@ -115,12 +143,59 @@ export default function SettingsPage() {
     }
   };
 
+  const handleOpenTagModal = (tag?: TagType) => {
+    setEditingTag(tag || null);
+    if (tag) {
+      tagForm.setFieldsValue({ name: tag.name, color: tag.color });
+    } else {
+      tagForm.resetFields();
+      tagForm.setFieldsValue({ color: '#1677ff' });
+    }
+    setTagModalOpen(true);
+  };
+
+  const handleTagSubmit = async () => {
+    try {
+      const values = await tagForm.validateFields();
+      setTagSubmitting(true);
+      const colorHex =
+        typeof values.color === 'string'
+          ? values.color
+          : (values.color as any)?.toHexString?.() ?? '#1677ff';
+
+      if (editingTag) {
+        const updated = await updateTag(editingTag.id, { name: values.name, color: colorHex });
+        setTagsList((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+        message.success('Tag atualizada!');
+      } else {
+        const created = await createTag({ name: values.name, color: colorHex });
+        setTagsList((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+        message.success('Tag criada!');
+      }
+      setTagModalOpen(false);
+    } catch {
+      message.error('Erro ao salvar tag');
+    } finally {
+      setTagSubmitting(false);
+    }
+  };
+
+  const handleDeleteTag = async (id: string) => {
+    try {
+      await deleteTag(id);
+      setTagsList((prev) => prev.filter((t) => t.id !== id));
+      message.success('Tag removida!');
+    } catch {
+      message.error('Erro ao remover tag');
+    }
+  };
+
   const totalUsers = usersList.length;
   const adminCount = usersList.filter((u) => u.role === 'admin').length;
   const qaCount = usersList.filter((u) => u.role === 'qa').length;
   const viewerCount = usersList.filter((u) => u.role === 'viewer').length;
 
-  const columns: ColumnsType<UserProfile> = [
+  const userColumns: ColumnsType<UserProfile> = [
     {
       title: 'Colaborador',
       dataIndex: 'email',
@@ -167,43 +242,21 @@ export default function SettingsPage() {
           onChange={(newVal) => handleRoleChange(record.id, newVal as UserRole)}
           loading={updatingUserId === record.id}
           disabled={record.id === profile?.id}
-          style={{ width: 140 }}
+          style={{ width: 160 }}
           options={[
-            {
-              value: 'admin',
-              label: (
-                <Tag color="red" icon={<CrownOutlined />}>
-                  ADMIN
-                </Tag>
-              ),
-            },
-            {
-              value: 'qa',
-              label: (
-                <Tag color="blue" icon={<SafetyCertificateOutlined />}>
-                  QA
-                </Tag>
-              ),
-            },
-            {
-              value: 'viewer',
-              label: (
-                <Tag color="green" icon={<UserOutlined />}>
-                  VIEWER
-                </Tag>
-              ),
-            },
+            { value: 'admin', label: 'Admin' },
+            { value: 'qa', label: 'QA' },
+            { value: 'viewer', label: 'Viewer' },
           ]}
         />
       ),
     },
     {
-      title: 'Cadastrado em',
+      title: 'Desde',
       dataIndex: 'created_at',
       key: 'created_at',
       width: 140,
       render: (date: string) => dayjs(date).format('DD/MM/YYYY'),
-      sorter: (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
     },
     {
       title: 'Ações',
@@ -212,177 +265,279 @@ export default function SettingsPage() {
       align: 'right',
       render: (_, record) => (
         <Popconfirm
-          title="Remover usuário?"
-          description="O acesso desta conta ao sistema será revogado."
-          disabled={record.id === profile?.id}
+          title="Remover acesso?"
+          description="O usuário perderá acesso ao sistema."
           onConfirm={() => handleDeleteUser(record.id)}
           okText="Remover"
           cancelText="Cancelar"
           okButtonProps={{ danger: true }}
+          disabled={record.id === profile?.id}
         >
           <Button
             size="small"
             danger
             icon={<DeleteOutlined />}
             disabled={record.id === profile?.id}
-            title={record.id === profile?.id ? 'Você não pode excluir sua própria conta' : 'Excluir'}
           />
         </Popconfirm>
       ),
     },
   ];
 
+  const tagColumns: ColumnsType<TagType> = [
+    {
+      title: 'Tag',
+      key: 'tag',
+      render: (_, record) => (
+        <Tag color={record.color} style={{ fontSize: 13, padding: '2px 10px' }}>
+          {record.name}
+        </Tag>
+      ),
+    },
+    {
+      title: 'Cor (hex)',
+      dataIndex: 'color',
+      key: 'color',
+      width: 120,
+      render: (color: string) => (
+        <Space>
+          <div
+            style={{
+              width: 16,
+              height: 16,
+              borderRadius: 3,
+              backgroundColor: color,
+              border: '1px solid rgba(128,128,128,0.3)',
+            }}
+          />
+          <Text type="secondary" style={{ fontSize: 12 }}>{color}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: 'Criada em',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 140,
+      render: (date: string) => dayjs(date).format('DD/MM/YYYY'),
+    },
+    {
+      title: 'Ações',
+      key: 'actions',
+      width: 120,
+      align: 'right',
+      render: (_, record) => (
+        <Space size="small">
+          <Button
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => handleOpenTagModal(record)}
+          />
+          <Popconfirm
+            title="Remover tag?"
+            description="Os vínculos com casos de teste serão removidos automaticamente."
+            onConfirm={() => handleDeleteTag(record.id)}
+            okText="Remover"
+            cancelText="Cancelar"
+            okButtonProps={{ danger: true }}
+          >
+            <Button size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
+  const tabItems = [
+    {
+      key: 'team',
+      label: (
+        <span>
+          <TeamOutlined /> Equipe &amp; Acesso
+        </span>
+      ),
+      children: (
+        <div>
+          <Row gutter={16} style={{ marginBottom: 20 }}>
+            <Col span={6}>
+              <Card bordered={false}>
+                <Statistic title="Total de Usuários" value={totalUsers} prefix={<UserOutlined />} />
+              </Card>
+            </Col>
+            <Col span={6}>
+              <Card bordered={false}>
+                <Statistic title="Admins" value={adminCount} prefix={<CrownOutlined />} valueStyle={{ color: '#ff4d4f' }} />
+              </Card>
+            </Col>
+            <Col span={6}>
+              <Card bordered={false}>
+                <Statistic title="QAs" value={qaCount} prefix={<CheckCircleOutlined />} valueStyle={{ color: '#1677ff' }} />
+              </Card>
+            </Col>
+            <Col span={6}>
+              <Card bordered={false}>
+                <Statistic title="Viewers" value={viewerCount} prefix={<UserOutlined />} valueStyle={{ color: '#8c8c8c' }} />
+              </Card>
+            </Col>
+          </Row>
+          <Table
+            columns={userColumns}
+            dataSource={usersList}
+            rowKey="id"
+            loading={loadingUsers}
+            pagination={false}
+          />
+        </div>
+      ),
+    },
+    {
+      key: 'tags',
+      label: (
+        <span>
+          <TagsOutlined /> Tags
+        </span>
+      ),
+      children: (
+        <div>
+          <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text type="secondary">
+              Tags são usadas para classificar casos de teste e filtrar a criação de ciclos de execução.
+              Qualquer membro pode criar e aplicar tags; apenas admins podem excluí-las.
+            </Text>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => handleOpenTagModal()}
+            >
+              Nova Tag
+            </Button>
+          </div>
+          <Table
+            columns={tagColumns}
+            dataSource={tagsList}
+            rowKey="id"
+            loading={loadingTags}
+            pagination={false}
+            locale={{
+              emptyText: (
+                <div style={{ padding: '30px 0', textAlign: 'center' }}>
+                  <Text type="secondary">Nenhuma tag cadastrada. Crie a primeira!</Text>
+                </div>
+              ),
+            }}
+          />
+        </div>
+      ),
+    },
+    {
+      key: 'security',
+      label: (
+        <span>
+          <SafetyCertificateOutlined /> Segurança &amp; Domínio
+        </span>
+      ),
+      children: (
+        <Card bordered={false}>
+          <Descriptions
+            title="Política de Acesso"
+            bordered
+            column={1}
+            size="small"
+          >
+            <Descriptions.Item label="Domínio permitido">
+              <Tag color="blue">@insanemedia.com.br</Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="Restrição aplicada em">
+              Frontend (validação imediata) + Database Trigger (backend)
+            </Descriptions.Item>
+            <Descriptions.Item label="Administrador padrão">
+              bruno.melo@insanemedia.com.br
+            </Descriptions.Item>
+          </Descriptions>
+        </Card>
+      ),
+    },
+    {
+      key: 'integrations',
+      label: (
+        <span>
+          <LinkOutlined /> Integrações
+        </span>
+      ),
+      children: (
+        <Card bordered={false}>
+          <Title level={5}>ClickUp</Title>
+          <Paragraph type="secondary">
+            Cole a URL base do seu workspace do ClickUp. Os links de bugs serão
+            validados e exibidos como atalhos clicáveis nos comentários dos ciclos de teste.
+          </Paragraph>
+          <Space>
+            <Input
+              prefix={<GlobalOutlined />}
+              placeholder="https://app.clickup.com/t/..."
+              style={{ width: 400 }}
+            />
+            <Button icon={<CheckCircleOutlined />}>Salvar</Button>
+          </Space>
+        </Card>
+      ),
+    },
+  ];
+
   return (
     <AppLayout>
-      <div style={{ marginBottom: 20 }}>
-        <Title level={4} style={{ margin: 0 }}>
-          Painel de Administração & Configurações
-        </Title>
-        <Text type="secondary">
-          Gerenciamento de acessos da equipe Insane Media, permissões e parâmetros do sistema
-        </Text>
+      <div style={{ marginBottom: 24 }}>
+        <Space align="center">
+          <SettingOutlined style={{ fontSize: 20 }} />
+          <Title level={3} style={{ margin: 0 }}>
+            Configurações
+          </Title>
+        </Space>
+        <Text type="secondary">Gerencie equipe, tags e configurações do sistema.</Text>
       </div>
 
-      <Tabs
-        defaultActiveKey="team"
-        items={[
-          {
-            key: 'team',
-            label: (
-              <span>
-                <TeamOutlined />
-                Equipe & Controle de Acessos
-              </span>
-            ),
-            children: (
-              <div>
-                {/* Stats Row */}
-                <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
-                  <Col xs={24} sm={12} lg={6}>
-                    <Card bordered={false}>
-                      <Statistic
-                        title="Total de Colaboradores"
-                        value={totalUsers}
-                        prefix={<TeamOutlined style={{ color: '#1677ff' }} />}
-                      />
-                    </Card>
-                  </Col>
-                  <Col xs={24} sm={12} lg={6}>
-                    <Card bordered={false}>
-                      <Statistic
-                        title="Administradores"
-                        value={adminCount}
-                        prefix={<CrownOutlined style={{ color: '#ff4d4f' }} />}
-                      />
-                    </Card>
-                  </Col>
-                  <Col xs={24} sm={12} lg={6}>
-                    <Card bordered={false}>
-                      <Statistic
-                        title="Membros de QA"
-                        value={qaCount}
-                        prefix={<SafetyCertificateOutlined style={{ color: '#1677ff' }} />}
-                      />
-                    </Card>
-                  </Col>
-                  <Col xs={24} sm={12} lg={6}>
-                    <Card bordered={false}>
-                      <Statistic
-                        title="Visualizadores (Viewers)"
-                        value={viewerCount}
-                        prefix={<UserOutlined style={{ color: '#52c41a' }} />}
-                      />
-                    </Card>
-                  </Col>
-                </Row>
+      <Card bordered={false}>
+        <Tabs items={tabItems} defaultActiveKey="team" />
+      </Card>
 
-                {/* Users Table */}
-                <Card bordered={false} bodyStyle={{ padding: 0 }}>
-                  <Table
-                    columns={columns}
-                    dataSource={usersList}
-                    rowKey="id"
-                    loading={loadingUsers}
-                    pagination={{ pageSize: 10 }}
-                  />
-                </Card>
-              </div>
-            ),
-          },
-          {
-            key: 'security',
-            label: (
-              <span>
-                <SafetyCertificateOutlined />
-                Segurança & Domínio Corporativo
-              </span>
-            ),
-            children: (
-              <Card bordered={false}>
-                <Descriptions title="Políticas de Segurança do QAForge" bordered column={1}>
-                  <Descriptions.Item label="Domínio Corporativo Permitido">
-                    <Tag color="blue" icon={<GlobalOutlined />} style={{ fontSize: 13, padding: '4px 10px' }}>
-                      @insanemedia.com.br
-                    </Tag>
-                    <div style={{ marginTop: 6, color: '#8c8c8c', fontSize: 12 }}>
-                      Apenas e-mails terminados em @insanemedia.com.br têm permissão para criar contas e fazer login.
-                    </div>
-                  </Descriptions.Item>
-                  <Descriptions.Item label="Papel Padrão para Novos Colaboradores">
-                    <Tag color="blue">QA (Criação e Execução de Testes)</Tag>
-                    <div style={{ marginTop: 6, color: '#8c8c8c', fontSize: 12 }}>
-                      Ao fazer login pela primeira vez, o colaborador recebe perfil de QA automaticamente. O Admin pode alterar para Viewer ou Admin quando desejar.
-                    </div>
-                  </Descriptions.Item>
-                  <Descriptions.Item label="Auditoria e Rastreabilidade">
-                    <Tag color="green" icon={<CheckCircleOutlined />}>
-                      Ativo (Tabela audit_logs)
-                    </Tag>
-                    <div style={{ marginTop: 6, color: '#8c8c8c', fontSize: 12 }}>
-                      Todas as ações de exclusão e fechamento de ciclos de testes são gravadas com timestamp e ID do usuário executor.
-                    </div>
-                  </Descriptions.Item>
-                </Descriptions>
-              </Card>
-            ),
-          },
-          {
-            key: 'integrations',
-            label: (
-              <span>
-                <LinkOutlined />
-                Integrações & ClickUp
-              </span>
-            ),
-            children: (
-              <Card bordered={false}>
-                <Descriptions title="Integrações de Gestão de Tarefas" bordered column={1}>
-                  <Descriptions.Item label="ClickUp Workspace">
-                    <Input
-                      defaultValue="https://app.clickup.com/"
-                      style={{ maxWidth: 450 }}
-                      placeholder="https://app.clickup.com/..."
-                    />
-                    <div style={{ marginTop: 6, color: '#8c8c8c', fontSize: 12 }}>
-                      URLs coladas no campo de comentário de testes com links do ClickUp abrem automaticamente em nova aba.
-                    </div>
-                  </Descriptions.Item>
-                  <Descriptions.Item label="Repositório Oficial do Projeto">
-                    <a
-                      href="https://github.com/brunomeloqa/qaforge"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-                    >
-                      <LinkOutlined /> https://github.com/brunomeloqa/qaforge
-                    </a>
-                  </Descriptions.Item>
-                </Descriptions>
-              </Card>
-            ),
-          },
-        ]}
-      />
+      {/* Modal de criação/edição de tag */}
+      <Modal
+        title={editingTag ? 'Editar Tag' : 'Nova Tag'}
+        open={tagModalOpen}
+        onOk={handleTagSubmit}
+        onCancel={() => setTagModalOpen(false)}
+        confirmLoading={tagSubmitting}
+        okText={editingTag ? 'Salvar' : 'Criar'}
+        cancelText="Cancelar"
+        destroyOnClose
+      >
+        <Form form={tagForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item
+            name="name"
+            label="Nome da Tag"
+            rules={[
+              { required: true, message: 'Informe o nome da tag' },
+              { min: 2, message: 'Mínimo de 2 caracteres' },
+            ]}
+          >
+            <Input placeholder="Ex: Smoke, Regressão, Crítico..." />
+          </Form.Item>
+          <Form.Item name="color" label="Cor">
+            <ColorPicker
+              format="hex"
+              presets={[
+                {
+                  label: 'Sugeridas',
+                  colors: [
+                    '#fa8c16', '#1677ff', '#52c41a', '#ff4d4f',
+                    '#722ed1', '#13c2c2', '#eb2f96', '#fadb14',
+                  ],
+                },
+              ]}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
     </AppLayout>
   );
 }

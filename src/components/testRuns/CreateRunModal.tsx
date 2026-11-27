@@ -13,11 +13,15 @@ import {
   Badge,
   message,
   Divider,
+  Button,
+  Tag,
 } from 'antd';
-import { getBranches } from '@/services/branches';
+import { PlusOutlined } from '@ant-design/icons';
+import { getBranches, createBranch } from '@/services/branches';
 import { getFeaturesWithCounts } from '@/services/features';
+import { getTags, createTag, getTestCaseIdsByTag } from '@/services/tags';
 import { createClient } from '@/lib/supabase/client';
-import type { QaBranch } from '@/types/database';
+import type { QaBranch, Tag as TagType } from '@/types/database';
 import type { FeatureWithCount } from '@/services/features';
 import PriorityTag from '@/components/testCases/PriorityTag';
 
@@ -46,15 +50,32 @@ export default function CreateRunModal({
 }: CreateRunModalProps) {
   const [form] = Form.useForm();
   const [branches, setBranches] = useState<QaBranch[]>([]);
+  const [availableTags, setAvailableTags] = useState<TagType[]>([]);
   const [featuresWithTests, setFeaturesWithTests] = useState<FeatureWithTests[]>([]);
   const [selectedTestIds, setSelectedTestIds] = useState<Set<string>>(new Set());
   const [loadingData, setLoadingData] = useState(false);
+
+  // Branch: 'existing' | 'new'
+  const [branchMode, setBranchMode] = useState<'existing' | 'new'>('existing');
+  const [newBranchName, setNewBranchName] = useState('');
+
+  // Tag filter
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  const [filteredByTagCaseIds, setFilteredByTagCaseIds] = useState<Set<string> | null>(null);
+
+  // Inline new tag creation
+  const [newTagName, setNewTagName] = useState('');
+  const [creatingTag, setCreatingTag] = useState(false);
 
   useEffect(() => {
     if (open) {
       loadInitialData();
       form.resetFields();
       setSelectedTestIds(new Set());
+      setBranchMode('existing');
+      setNewBranchName('');
+      setSelectedTagIds([]);
+      setFilteredByTagCaseIds(null);
     }
   }, [open]);
 
@@ -62,14 +83,14 @@ export default function CreateRunModal({
     setLoadingData(true);
     try {
       const supabase = createClient();
-      const [branchesData, featuresData] = await Promise.all([
+      const [branchesData, featuresData, tagsData] = await Promise.all([
         getBranches(),
         getFeaturesWithCounts(),
+        getTags(),
       ]);
-
       setBranches(branchesData);
+      setAvailableTags(tagsData);
 
-      // Carregar todos os casos de teste agrupados pelas features
       const { data: allTestCases } = await supabase
         .from('test_cases')
         .select('id, feature_id, title, priority')
@@ -79,224 +100,283 @@ export default function CreateRunModal({
         ...f,
         tests: (allTestCases || []).filter((tc) => tc.feature_id === f.id),
       }));
-
       setFeaturesWithTests(mapped);
-
-      // Por padrão, já selecionar todos os testes para agilizar
-      const allIds = new Set<string>((allTestCases || []).map((t) => t.id));
-      setSelectedTestIds(allIds);
     } catch {
-      message.error('Erro ao carregar dados para o ciclo de teste');
+      message.error('Erro ao carregar dados');
     } finally {
       setLoadingData(false);
     }
   };
 
-  const handleSelectAll = (checked: boolean) => {
-    if (checked) {
-      const allIds = new Set<string>();
-      featuresWithTests.forEach((f) => f.tests.forEach((t) => allIds.add(t.id)));
-      setSelectedTestIds(allIds);
-    } else {
-      setSelectedTestIds(new Set());
+  const handleTagFilterChange = async (tagIds: string[]) => {
+    setSelectedTagIds(tagIds);
+    setSelectedTestIds(new Set()); // reset selection when filter changes
+    if (tagIds.length === 0) {
+      setFilteredByTagCaseIds(null);
+      return;
+    }
+    try {
+      const ids = await getTestCaseIdsByTag(tagIds);
+      setFilteredByTagCaseIds(new Set(ids));
+    } catch {
+      message.error('Erro ao filtrar por tags');
     }
   };
 
-  const handleToggleFeatureTests = (feature: FeatureWithTests, checked: boolean) => {
-    const updated = new Set(selectedTestIds);
-    feature.tests.forEach((t) => {
-      if (checked) {
-        updated.add(t.id);
-      } else {
-        updated.delete(t.id);
-      }
+  const handleInlineCreateTag = async () => {
+    const name = newTagName.trim();
+    if (!name) return;
+    setCreatingTag(true);
+    try {
+      const created = await createTag({ name, color: '#1677ff' });
+      setAvailableTags((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+      setSelectedTagIds((prev) => [...prev, created.id]);
+      await handleTagFilterChange([...selectedTagIds, created.id]);
+      setNewTagName('');
+      message.success(`Tag "${created.name}" criada!`);
+    } catch {
+      message.error('Erro ao criar tag');
+    } finally {
+      setCreatingTag(false);
+    }
+  };
+
+  const visibleTests = (tests: { id: string; title: string; priority: string }[]) => {
+    if (!filteredByTagCaseIds) return tests;
+    return tests.filter((t) => filteredByTagCaseIds.has(t.id));
+  };
+
+  const toggleTestCase = (id: string) => {
+    setSelectedTestIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
     });
-    setSelectedTestIds(updated);
   };
 
-  const handleToggleSingleTest = (testId: string) => {
-    const updated = new Set(selectedTestIds);
-    if (updated.has(testId)) {
-      updated.delete(testId);
-    } else {
-      updated.add(testId);
-    }
-    setSelectedTestIds(updated);
+  const toggleFeatureAll = (feature: FeatureWithTests, checked: boolean) => {
+    const visible = visibleTests(feature.tests).map((t) => t.id);
+    setSelectedTestIds((prev) => {
+      const next = new Set(prev);
+      visible.forEach((id) => (checked ? next.add(id) : next.delete(id)));
+      return next;
+    });
   };
 
   const handleOk = async () => {
     try {
       const values = await form.validateFields();
-      if (selectedTestIds.size === 0) {
-        message.warning('Selecione ao menos um caso de teste para o ciclo.');
+      if (branchMode === 'new' && !newBranchName.trim()) {
+        message.error('Informe o nome da branch');
         return;
+      }
+      if (selectedTestIds.size === 0) {
+        message.error('Selecione ao menos um caso de teste');
+        return;
+      }
+
+      let branchId: string | null = values.qa_branch_id || null;
+
+      if (branchMode === 'new') {
+        const created = await createBranch({ name: newBranchName.trim(), status: 'testing' });
+        branchId = created.id;
       }
 
       await onSubmit({
         title: values.title,
-        qa_branch_id: values.qa_branch_id || null,
+        qa_branch_id: branchId,
         selectedTestCaseIds: Array.from(selectedTestIds),
       });
     } catch {
-      // form validation failed
+      // form validation error
     }
   };
 
-  const totalAvailableTests = featuresWithTests.reduce(
-    (acc, f) => acc + f.tests.length,
-    0
-  );
-  const allSelected =
-    totalAvailableTests > 0 && selectedTestIds.size === totalAvailableTests;
+  const collapseItems = featuresWithTests
+    .filter((f) => {
+      const visible = visibleTests(f.tests);
+      return visible.length > 0;
+    })
+    .map((feature) => {
+      const visible = visibleTests(feature.tests);
+      const selectedCount = visible.filter((t) => selectedTestIds.has(t.id)).length;
+      const allSelected = visible.length > 0 && selectedCount === visible.length;
+
+      return {
+        key: feature.id,
+        label: (
+          <Space>
+            <Checkbox
+              checked={allSelected}
+              indeterminate={selectedCount > 0 && !allSelected}
+              onChange={(e) => toggleFeatureAll(feature, e.target.checked)}
+              onClick={(e) => e.stopPropagation()}
+            />
+            <Text strong>{feature.title}</Text>
+            <Badge count={selectedCount} showZero color={selectedCount > 0 ? '#1677ff' : '#d9d9d9'} />
+            <Text type="secondary">/ {visible.length} testes</Text>
+          </Space>
+        ),
+        children: (
+          <Space direction="vertical" style={{ width: '100%' }}>
+            {visible.map((test) => (
+              <div
+                key={test.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '4px 0',
+                  cursor: 'pointer',
+                }}
+                onClick={() => toggleTestCase(test.id)}
+              >
+                <Checkbox checked={selectedTestIds.has(test.id)} />
+                <PriorityTag priority={test.priority} />
+                <Text style={{ flex: 1 }}>{test.title}</Text>
+              </div>
+            ))}
+          </Space>
+        ),
+      };
+    });
 
   return (
     <Modal
-      title="Novo Ciclo de Teste (Test Run)"
+      title="Novo Ciclo de Execução"
       open={open}
       onOk={handleOk}
       onCancel={onCancel}
       confirmLoading={loading}
-      okText={`Iniciar Ciclo (${selectedTestIds.size} Testes)`}
+      okText="Criar Ciclo"
       cancelText="Cancelar"
-      width={720}
+      width={700}
       destroyOnClose
     >
-      <Form form={form} layout="vertical" requiredMark={false} style={{ marginTop: 16 }}>
+      <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+        {/* Título */}
         <Form.Item
           name="title"
           label="Título do Ciclo"
-          rules={[
-            { required: true, message: 'Informe o título do ciclo de testes' },
-            { min: 3, message: 'O título deve ter no mínimo 3 caracteres' },
-          ]}
+          rules={[{ required: true, message: 'Informe o título do ciclo' }]}
         >
-          <Input placeholder="Ex: Smoke Test - Semana 48 (Release v2.4)" />
+          <Input placeholder="Ex: Sprint 23 — Checkout e Pagamentos" />
         </Form.Item>
 
-        <Form.Item name="qa_branch_id" label="Vincular à Branch (Opcional)">
-          <Select
-            allowClear
-            placeholder="Selecione a branch testada..."
-            options={branches.map((b) => ({
-              value: b.id,
-              label: `${b.name} (${b.status === 'approved' ? 'Aprovada' : b.status === 'rejected' ? 'Reprovada' : 'Em teste'})`,
-            }))}
-          />
-        </Form.Item>
-
-        <Divider style={{ margin: '16px 0 12px 0' }} />
-
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: 12,
-          }}
-        >
-          <Text strong>
-            Importar Casos de Teste ({selectedTestIds.size} de {totalAvailableTests} selecionados)
-          </Text>
-          <Checkbox
-            checked={allSelected}
-            indeterminate={selectedTestIds.size > 0 && !allSelected}
-            onChange={(e) => handleSelectAll(e.target.checked)}
-          >
-            Selecionar Todos
-          </Checkbox>
-        </div>
-
-        <div
-          style={{
-            maxHeight: 320,
-            overflowY: 'auto',
-            border: '1px solid rgba(128, 128, 128, 0.2)',
-            borderRadius: 6,
-            padding: 8,
-          }}
-        >
-          {featuresWithTests.map((feature) => {
-            const featureTestIds = feature.tests.map((t) => t.id);
-            const selectedInFeature = featureTestIds.filter((id) =>
-              selectedTestIds.has(id)
-            ).length;
-            const isFeatureAllSelected =
-              feature.tests.length > 0 && selectedInFeature === feature.tests.length;
-            const isFeatureIndeterminate =
-              selectedInFeature > 0 && !isFeatureAllSelected;
-
-            return (
-              <Collapse
-                key={feature.id}
-                ghost
-                size="small"
-                style={{ marginBottom: 4 }}
-                items={[
-                  {
-                    key: feature.id,
-                    label: (
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          width: '100%',
-                          paddingRight: 8,
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <Checkbox
-                          checked={isFeatureAllSelected}
-                          indeterminate={isFeatureIndeterminate}
-                          onChange={(e) =>
-                            handleToggleFeatureTests(feature, e.target.checked)
-                          }
-                        >
-                          <span style={{ fontWeight: 600 }}>{feature.title}</span>
-                        </Checkbox>
-                        <Badge
-                          count={`${selectedInFeature}/${feature.tests.length}`}
-                          style={{
-                            backgroundColor: selectedInFeature > 0 ? '#1677ff' : '#8c8c8c',
-                          }}
-                        />
-                      </div>
-                    ),
-                    children: (
-                      <div style={{ paddingLeft: 24 }}>
-                        {feature.tests.length === 0 ? (
-                          <Text type="secondary" style={{ fontSize: 12 }}>
-                            Nenhum teste nesta feature.
-                          </Text>
-                        ) : (
-                          feature.tests.map((t) => (
-                            <div
-                              key={t.id}
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                padding: '4px 0',
-                              }}
-                            >
-                              <Checkbox
-                                checked={selectedTestIds.has(t.id)}
-                                onChange={() => handleToggleSingleTest(t.id)}
-                              >
-                                <span style={{ fontSize: 13 }}>{t.title}</span>
-                              </Checkbox>
-                              <PriorityTag priority={t.priority} />
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    ),
-                  },
-                ]}
+        {/* Branch */}
+        <Form.Item label="Branch Testada">
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Select
+              value={branchMode}
+              onChange={(v) => { setBranchMode(v); setNewBranchName(''); }}
+              style={{ width: 220 }}
+              options={[
+                { value: 'existing', label: 'Vincular branch existente' },
+                { value: 'new', label: 'Criar nova branch agora' },
+              ]}
+            />
+            {branchMode === 'existing' ? (
+              <Form.Item name="qa_branch_id" noStyle>
+                <Select
+                  allowClear
+                  placeholder="Selecione uma branch (opcional)"
+                  style={{ width: '100%' }}
+                  showSearch
+                  filterOption={(input, opt) =>
+                    (opt?.label as string)?.toLowerCase().includes(input.toLowerCase())
+                  }
+                  options={branches.map((b) => ({ value: b.id, label: b.name }))}
+                />
+              </Form.Item>
+            ) : (
+              <Input
+                placeholder="Nome da nova branch (Ex: feature/login-redesign)"
+                value={newBranchName}
+                onChange={(e) => setNewBranchName(e.target.value)}
+                style={{ width: '100%' }}
               />
-            );
-          })}
-        </div>
+            )}
+          </Space>
+        </Form.Item>
+
+        <Divider style={{ margin: '8px 0 16px' }} />
+
+        {/* Filtro por tag */}
+        <Form.Item label="Filtrar casos de teste por tag">
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder="Selecione tags para filtrar (opcional)"
+              style={{ width: '100%' }}
+              value={selectedTagIds}
+              onChange={handleTagFilterChange}
+              options={availableTags.map((t) => ({
+                value: t.id,
+                label: (
+                  <Tag color={t.color} style={{ margin: 0 }}>
+                    {t.name}
+                  </Tag>
+                ),
+              }))}
+              dropdownRender={(menu) => (
+                <>
+                  {menu}
+                  <Divider style={{ margin: '8px 0' }} />
+                  <Space style={{ padding: '0 8px 8px' }}>
+                    <Input
+                      placeholder="Nova tag..."
+                      value={newTagName}
+                      onChange={(e) => setNewTagName(e.target.value)}
+                      onPressEnter={handleInlineCreateTag}
+                      size="small"
+                      style={{ width: 160 }}
+                    />
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<PlusOutlined />}
+                      loading={creatingTag}
+                      onClick={handleInlineCreateTag}
+                    >
+                      Criar tag
+                    </Button>
+                  </Space>
+                </>
+              )}
+            />
+            {filteredByTagCaseIds !== null && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {filteredByTagCaseIds.size} casos de teste encontrados com as tags selecionadas.
+              </Text>
+            )}
+          </Space>
+        </Form.Item>
+
+        {/* Seleção de casos de teste */}
+        <Form.Item label={
+          <Space>
+            <span>Casos de Teste</span>
+            <Badge count={selectedTestIds.size} showZero color="#1677ff" />
+          </Space>
+        }>
+          {loadingData ? (
+            <Text type="secondary">Carregando casos de teste...</Text>
+          ) : collapseItems.length === 0 ? (
+            <Text type="secondary">
+              {filteredByTagCaseIds !== null
+                ? 'Nenhum caso de teste encontrado com as tags selecionadas.'
+                : 'Nenhum caso de teste cadastrado.'}
+            </Text>
+          ) : (
+            <Collapse
+              size="small"
+              items={collapseItems}
+              style={{ maxHeight: 320, overflowY: 'auto' }}
+            />
+          )}
+        </Form.Item>
       </Form>
     </Modal>
   );

@@ -15,6 +15,10 @@ import {
   Tag,
   message,
   Tooltip,
+  InputNumber,
+  Form,
+  Modal,
+  Alert,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
@@ -25,6 +29,8 @@ import {
   BranchesOutlined,
   LinkOutlined,
   SaveOutlined,
+  BugOutlined,
+  WarningOutlined,
 } from '@ant-design/icons';
 import { useParams, useRouter } from 'next/navigation';
 import {
@@ -33,7 +39,8 @@ import {
   updateTestRunItem,
   type TestRunSummary,
 } from '@/services/testRuns';
-import type { TestRunItem, ItemStatus } from '@/types/database';
+import { updateBranch, getBranchById } from '@/services/branches';
+import type { TestRunItem, ItemStatus, QaBranch, BranchStatus } from '@/types/database';
 import PriorityTag from '@/components/testCases/PriorityTag';
 import RunStatusTag from '@/components/testRuns/RunStatusTag';
 import ItemStatusTag, { itemStatusConfig } from '@/components/testRuns/ItemStatusTag';
@@ -59,6 +66,12 @@ export default function TestRunExecutionPage() {
   // Local comments editing map to avoid losing keystrokes
   const [commentsMap, setCommentsMap] = useState<Record<string, string>>({});
 
+  // Branch closure state
+  const [branch, setBranch] = useState<QaBranch | null>(null);
+  const [closeModalOpen, setCloseModalOpen] = useState(false);
+  const [closeForm] = Form.useForm();
+  const [closing, setClosing] = useState(false);
+
   const loadData = async () => {
     setLoading(true);
     try {
@@ -71,6 +84,12 @@ export default function TestRunExecutionPage() {
         initialComments[item.id] = item.comment || '';
       });
       setCommentsMap(initialComments);
+
+      // Load linked branch if exists and run is open
+      if (data.run?.qa_branch_id && data.run.status === 'open') {
+        const b = await getBranchById(data.run.qa_branch_id);
+        setBranch(b);
+      }
     } catch {
       message.error('Erro ao carregar dados do ciclo de teste');
     } finally {
@@ -98,7 +117,6 @@ export default function TestRunExecutionPage() {
         qa_id: qaId,
       });
 
-      // Update locally for instant responsiveness
       setItems((prev) =>
         prev.map((item) =>
           item.id === itemId
@@ -113,7 +131,6 @@ export default function TestRunExecutionPage() {
         )
       );
 
-      // Recalculate summary counts locally
       if (run) {
         setRun((prevRun) => {
           if (!prevRun) return null;
@@ -146,7 +163,7 @@ export default function TestRunExecutionPage() {
     const originalItem = items.find((i) => i.id === itemId);
 
     if (originalItem && (originalItem.comment || '') === currentComment) {
-      return; // No change
+      return;
     }
 
     try {
@@ -172,20 +189,76 @@ export default function TestRunExecutionPage() {
     }
   };
 
-  const handleToggleRunStatus = async () => {
+  // Open close modal (requires branch update if linked)
+  const handleClickFinalize = () => {
     if (!run || isViewer) return;
-    const nextStatus = run.status === 'open' ? 'closed' : 'open';
+    if (branch) {
+      closeForm.setFieldsValue({
+        bugs_created_count: branch.bugs_created_count || 0,
+        rejected_cards_count: branch.rejected_cards_count || 0,
+        rejection_count: branch.rejection_count || 0,
+        status: branch.status,
+        reason: branch.reason || '',
+      });
+      setCloseModalOpen(true);
+    } else {
+      handleCloseRun();
+    }
+  };
 
+  const handleCloseRun = async (branchValues?: {
+    bugs_created_count: number;
+    rejected_cards_count: number;
+    rejection_count: number;
+    status: BranchStatus;
+    reason?: string;
+  }) => {
+    if (!run) return;
+    setClosing(true);
     try {
-      await updateTestRunStatus(run.id, nextStatus);
-      setRun({ ...run, status: nextStatus });
-      message.success(
-        nextStatus === 'closed'
-          ? 'Ciclo marcado como concluído!'
-          : 'Ciclo reaberto para execução!'
-      );
+      if (branch && branchValues) {
+        await updateBranch(branch.id, {
+          bugs_created_count: branchValues.bugs_created_count,
+          rejected_cards_count: branchValues.rejected_cards_count,
+          rejection_count: branchValues.rejection_count,
+          status: branchValues.status,
+          reason: branchValues.reason || null,
+        });
+      }
+      await updateTestRunStatus(run.id, 'closed');
+      setRun({ ...run, status: 'closed' });
+      setBranch(null);
+      setCloseModalOpen(false);
+      message.success('Ciclo finalizado e branch atualizada!');
     } catch {
-      message.error('Erro ao atualizar status do ciclo');
+      message.error('Erro ao finalizar ciclo');
+    } finally {
+      setClosing(false);
+    }
+  };
+
+  const handleCloseModalOk = async () => {
+    try {
+      const values = await closeForm.validateFields();
+      await handleCloseRun(values);
+    } catch {
+      // form validation error
+    }
+  };
+
+  const handleReopenRun = async () => {
+    if (!run || isViewer) return;
+    try {
+      await updateTestRunStatus(run.id, 'open');
+      setRun({ ...run, status: 'open' });
+      // Re-load branch if exists
+      if (run.qa_branch_id) {
+        const b = await getBranchById(run.qa_branch_id);
+        setBranch(b);
+      }
+      message.success('Ciclo reaberto para execução!');
+    } catch {
+      message.error('Erro ao reabrir ciclo');
     }
   };
 
@@ -199,7 +272,6 @@ export default function TestRunExecutionPage() {
     });
   }, [items, searchTerm, statusFilter]);
 
-  // Overall Run Stats
   const totalItems = run?.total_items || items.length;
   const doneCount = items.filter((i) => i.status === 'done').length;
   const failedCount = items.filter((i) => i.status === 'failed').length;
@@ -208,6 +280,8 @@ export default function TestRunExecutionPage() {
 
   const progressPercent =
     totalItems > 0 ? Math.round(((doneCount + failedCount) / totalItems) * 100) : 0;
+
+  const branchStatusField = Form.useWatch('status', closeForm);
 
   const columns: ColumnsType<TestRunItem & { qa_email?: string | null }> = [
     {
@@ -241,38 +315,10 @@ export default function TestRunExecutionPage() {
             style={{ width: 145 }}
             dropdownMatchSelectWidth={false}
             options={[
-              {
-                value: 'to_test',
-                label: (
-                  <span>
-                    <ItemStatusTag status="to_test" />
-                  </span>
-                ),
-              },
-              {
-                value: 'testing',
-                label: (
-                  <span>
-                    <ItemStatusTag status="testing" />
-                  </span>
-                ),
-              },
-              {
-                value: 'failed',
-                label: (
-                  <span>
-                    <ItemStatusTag status="failed" />
-                  </span>
-                ),
-              },
-              {
-                value: 'done',
-                label: (
-                  <span>
-                    <ItemStatusTag status="done" />
-                  </span>
-                ),
-              },
+              { value: 'to_test', label: <span><ItemStatusTag status="to_test" /></span> },
+              { value: 'testing', label: <span><ItemStatusTag status="testing" /></span> },
+              { value: 'failed', label: <span><ItemStatusTag status="failed" /></span> },
+              { value: 'done', label: <span><ItemStatusTag status="done" /></span> },
             ]}
           />
         );
@@ -351,9 +397,7 @@ export default function TestRunExecutionPage() {
               </span>
             ),
           },
-          {
-            title: run?.title || 'Execução do Ciclo',
-          },
+          { title: run?.title || 'Execução do Ciclo' },
         ]}
       />
 
@@ -394,13 +438,24 @@ export default function TestRunExecutionPage() {
           </div>
 
           {!isViewer && run && (
-            <Button
-              type={run.status === 'open' ? 'primary' : 'default'}
-              icon={run.status === 'open' ? <CheckOutlined /> : <UndoOutlined />}
-              onClick={handleToggleRunStatus}
-            >
-              {run.status === 'open' ? 'Finalizar Ciclo' : 'Reabrir Ciclo'}
-            </Button>
+            <Space>
+              {run.status === 'open' ? (
+                <Button
+                  type="primary"
+                  icon={<CheckOutlined />}
+                  onClick={handleClickFinalize}
+                >
+                  {branch ? 'Finalizar e Atualizar Branch' : 'Finalizar Ciclo'}
+                </Button>
+              ) : (
+                <Button
+                  icon={<UndoOutlined />}
+                  onClick={handleReopenRun}
+                >
+                  Reabrir Ciclo
+                </Button>
+              )}
+            </Space>
           )}
         </div>
 
@@ -492,6 +547,95 @@ export default function TestRunExecutionPage() {
           }}
         />
       </Card>
+
+      {/* Modal de Finalização com atualização de branch */}
+      <Modal
+        title={
+          <Space>
+            <BranchesOutlined />
+            Finalizar Ciclo — Atualizar Branch
+          </Space>
+        }
+        open={closeModalOpen}
+        onOk={handleCloseModalOk}
+        onCancel={() => setCloseModalOpen(false)}
+        confirmLoading={closing}
+        okText="Finalizar e Salvar"
+        cancelText="Cancelar"
+        width={520}
+        destroyOnClose
+      >
+        {branch && (
+          <>
+            <Alert
+              message={`Branch vinculada: ${branch.name}`}
+              type="info"
+              showIcon
+              icon={<BranchesOutlined />}
+              style={{ marginBottom: 20 }}
+            />
+            <Form form={closeForm} layout="vertical">
+              <Space style={{ width: '100%' }} direction="vertical">
+                <div style={{ display: 'flex', gap: 16 }}>
+                  <Form.Item
+                    name="bugs_created_count"
+                    label={<Space><BugOutlined /> Bugs Encontrados</Space>}
+                    rules={[{ required: true, message: 'Informe a quantidade' }]}
+                    style={{ flex: 1, marginBottom: 0 }}
+                  >
+                    <InputNumber min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="rejected_cards_count"
+                    label={<Space><WarningOutlined /> Cards Reprovados</Space>}
+                    rules={[{ required: true, message: 'Informe a quantidade' }]}
+                    style={{ flex: 1, marginBottom: 0 }}
+                  >
+                    <InputNumber min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="rejection_count"
+                    label="Nº de Retornos"
+                    rules={[{ required: true, message: 'Informe a quantidade' }]}
+                    style={{ flex: 1, marginBottom: 0 }}
+                  >
+                    <InputNumber min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                </div>
+
+                <Form.Item
+                  name="status"
+                  label="Status da Branch"
+                  rules={[{ required: true, message: 'Selecione o status' }]}
+                  style={{ marginBottom: 0 }}
+                >
+                  <Select
+                    options={[
+                      { value: 'approved', label: '✅ Aprovada' },
+                      { value: 'rejected', label: '❌ Reprovada' },
+                      { value: 'testing', label: '🔄 Manter Em Teste' },
+                    ]}
+                  />
+                </Form.Item>
+
+                {branchStatusField === 'rejected' && (
+                  <Form.Item
+                    name="reason"
+                    label="Motivo da reprovação"
+                    rules={[{ required: true, message: 'Informe o motivo da reprovação' }]}
+                    style={{ marginBottom: 0 }}
+                  >
+                    <Input.TextArea
+                      rows={3}
+                      placeholder="Descreva o motivo da reprovação da branch..."
+                    />
+                  </Form.Item>
+                )}
+              </Space>
+            </Form>
+          </>
+        )}
+      </Modal>
     </AppLayout>
   );
 }

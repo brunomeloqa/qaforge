@@ -61,6 +61,18 @@ export interface TestRunItem {
   qa_user?: UserProfile;
 }
 
+export interface Tag {
+  id: string;
+  name: string;
+  color: string;
+  created_at: string;
+}
+
+export interface TestCaseTag {
+  test_case_id: string;
+  tag_id: string;
+}
+
 export interface AuditLog {
   id: string;
   user_id: string | null;

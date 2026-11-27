@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/client';
 import type { TestCase, TestPriority } from '@/types/database';
+import { setTagsForTestCase } from '@/services/tags';
 
 export async function getTestCasesByFeature(featureId: string): Promise<TestCase[]> {
   const supabase = createClient();
@@ -22,6 +23,7 @@ export async function createTestCase(testCase: {
   feature_id: string;
   title: string;
   priority: TestPriority;
+  tagIds?: string[];
 }): Promise<TestCase> {
   const supabase = createClient();
 
@@ -40,6 +42,10 @@ export async function createTestCase(testCase: {
   if (error) {
     console.error('Error creating test case:', error);
     throw error;
+  }
+
+  if (testCase.tagIds && testCase.tagIds.length > 0) {
+    await setTagsForTestCase(data.id, testCase.tagIds);
   }
 
   return data;
@@ -75,6 +81,7 @@ export async function updateTestCase(
   testCase: {
     title?: string;
     priority?: TestPriority;
+    tagIds?: string[];
   }
 ): Promise<TestCase> {
   const supabase = createClient();
@@ -93,6 +100,10 @@ export async function updateTestCase(
   if (error) {
     console.error('Error updating test case:', error);
     throw error;
+  }
+
+  if (testCase.tagIds !== undefined) {
+    await setTagsForTestCase(id, testCase.tagIds);
   }
 
   return data;
