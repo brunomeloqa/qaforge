@@ -25,6 +25,7 @@ export interface TestCase {
   title: string;
   priority: TestPriority;
   created_at: string;
+  tags?: Tag[];
 }
 
 export interface QaBranch {

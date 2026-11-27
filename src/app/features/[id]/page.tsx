@@ -16,6 +16,7 @@ import {
   Tooltip,
   Form,
   Tag,
+  Divider,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
@@ -35,7 +36,8 @@ import {
   updateTestCase,
   deleteTestCase,
 } from '@/services/testCases';
-import type { Feature, TestCase, TestPriority } from '@/types/database';
+import { getTags, createTag } from '@/services/tags';
+import type { Feature, TestCase, TestPriority, Tag as TagType } from '@/types/database';
 import PriorityTag from '@/components/testCases/PriorityTag';import TestCaseModal from '@/components/testCases/TestCaseModal';
 import FeatureModal from '@/components/features/FeatureModal';
 import { useAuth } from '@/context/AuthContext';
@@ -55,11 +57,16 @@ export default function FeatureDetailPage() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
+  const [tagFilter, setTagFilter] = useState<string[]>([]);
+  const [availableTags, setAvailableTags] = useState<TagType[]>([]);
 
   // Fast inline addition state
   const [quickTitle, setQuickTitle] = useState('');
   const [quickPriority, setQuickPriority] = useState<TestPriority>('medium');
+  const [quickTagIds, setQuickTagIds] = useState<string[]>([]);
   const [quickAdding, setQuickAdding] = useState(false);
+  const [newTagName, setNewTagName] = useState('');
+  const [creatingTag, setCreatingTag] = useState(false);
 
   // Modals state
   const [editingCase, setEditingCase] = useState<TestCase | null>(null);
@@ -72,12 +79,14 @@ export default function FeatureDetailPage() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [feat, cases] = await Promise.all([
+      const [feat, cases, tagsData] = await Promise.all([
         getFeatureById(featureId),
         getTestCasesByFeature(featureId),
+        getTags(),
       ]);
       setFeature(feat);
       setTestCases(cases);
+      setAvailableTags(tagsData);
     } catch {
       message.error('Erro ao carregar dados da feature');
     } finally {
@@ -104,14 +113,33 @@ export default function FeatureDetailPage() {
         feature_id: featureId,
         title: quickTitle.trim(),
         priority: quickPriority,
+        tagIds: quickTagIds,
       });
       setTestCases([created, ...testCases]);
       setQuickTitle('');
+      setQuickTagIds([]);
       message.success('Caso de teste adicionado!');
     } catch {
       message.error('Erro ao adicionar caso de teste');
     } finally {
       setQuickAdding(false);
+    }
+  };
+
+  const handleInlineCreateTag = async () => {
+    const name = newTagName.trim();
+    if (!name) return;
+    setCreatingTag(true);
+    try {
+      const created = await createTag({ name, color: '#1677ff' });
+      setAvailableTags((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+      setQuickTagIds((prev) => [...prev, created.id]);
+      setNewTagName('');
+      message.success(`Tag "${created.name}" criada!`);
+    } catch {
+      message.error('Erro ao criar tag');
+    } finally {
+      setCreatingTag(false);
     }
   };
 
@@ -131,6 +159,7 @@ export default function FeatureDetailPage() {
     try {
       const updated = await updateTestCase(editingCase.id, { title: values.title, priority: values.priority, tagIds: values.tagIds });
       setTestCases(testCases.map((c) => (c.id === updated.id ? updated : c)));
+      getTags().then(setAvailableTags).catch(() => {});
       setCaseModalOpen(false);
       message.success('Caso de teste atualizado');
     } catch {
@@ -163,9 +192,12 @@ export default function FeatureDetailPage() {
     return testCases.filter((c) => {
       const matchesSearch = c.title.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesPriority = priorityFilter === 'all' || c.priority === priorityFilter;
-      return matchesSearch && matchesPriority;
+      const matchesTag =
+        tagFilter.length === 0 ||
+        (c.tags && c.tags.some((t) => tagFilter.includes(t.id)));
+      return matchesSearch && matchesPriority && matchesTag;
     });
-  }, [testCases, searchTerm, priorityFilter]);
+  }, [testCases, searchTerm, priorityFilter, tagFilter]);
 
   const priorityCounts = useMemo(() => {
     const counts = { low: 0, medium: 0, high: 0, critical: 0 };
@@ -181,6 +213,24 @@ export default function FeatureDetailPage() {
       dataIndex: 'title',
       key: 'title',
       render: (title: string) => <span style={{ fontWeight: 500 }}>{title}</span>,
+    },
+    {
+      title: 'Tags',
+      dataIndex: 'tags',
+      key: 'tags',
+      width: 220,
+      render: (tags: TagType[] | undefined) =>
+        tags && tags.length > 0 ? (
+          <Space size={[4, 4]} wrap>
+            {tags.map((t) => (
+              <Tag key={t.id} color={t.color} style={{ margin: 0 }}>
+                {t.name}
+              </Tag>
+            ))}
+          </Space>
+        ) : (
+          <Text type="secondary" style={{ fontSize: 12 }}>-</Text>
+        ),
     },
     {
       title: 'Prioridade',
@@ -322,13 +372,13 @@ export default function FeatureDetailPage() {
           <Text strong style={{ display: 'block', marginBottom: 8 }}>
             Adicionar Novo Caso de Teste
           </Text>
-          <Space direction="horizontal" style={{ width: '100%', display: 'flex' }} size="middle">
+          <Space direction="horizontal" style={{ width: '100%', display: 'flex', flexWrap: 'wrap' }} size="middle">
             <Input
               placeholder="Digite o título do teste (Ex: Validar cálculo de frete para região Norte)..."
               value={quickTitle}
               onChange={(e) => setQuickTitle(e.target.value)}
               onPressEnter={handleQuickAdd}
-              style={{ minWidth: 400, flex: 1 }}
+              style={{ minWidth: 320, flex: 1 }}
               size="middle"
             />
             <Select
@@ -342,6 +392,48 @@ export default function FeatureDetailPage() {
                 { value: 'medium', label: 'Média' },
                 { value: 'low', label: 'Baixa' },
               ]}
+            />
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder="Tags (opcional)"
+              value={quickTagIds}
+              onChange={setQuickTagIds}
+              style={{ minWidth: 200, maxWidth: 320 }}
+              size="middle"
+              options={availableTags.map((t) => ({
+                value: t.id,
+                label: (
+                  <Tag color={t.color} style={{ margin: 0 }}>
+                    {t.name}
+                  </Tag>
+                ),
+              }))}
+              dropdownRender={(menu) => (
+                <>
+                  {menu}
+                  <Divider style={{ margin: '8px 0' }} />
+                  <Space style={{ padding: '0 8px 8px' }}>
+                    <Input
+                      placeholder="Nova tag..."
+                      value={newTagName}
+                      onChange={(e) => setNewTagName(e.target.value)}
+                      onPressEnter={handleInlineCreateTag}
+                      size="small"
+                      style={{ width: 140 }}
+                    />
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<PlusOutlined />}
+                      loading={creatingTag}
+                      onClick={handleInlineCreateTag}
+                    >
+                      Criar
+                    </Button>
+                  </Space>
+                </>
+              )}
             />
             <Button
               type="primary"
@@ -373,7 +465,23 @@ export default function FeatureDetailPage() {
             Moldes de Teste ({filteredCases.length})
           </Title>
 
-          <Space size="middle">
+          <Space size="middle" wrap>
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder="Filtrar por tags..."
+              value={tagFilter}
+              onChange={setTagFilter}
+              style={{ minWidth: 180 }}
+              options={availableTags.map((t) => ({
+                value: t.id,
+                label: (
+                  <Tag color={t.color} style={{ margin: 0 }}>
+                    {t.name}
+                  </Tag>
+                ),
+              }))}
+            />
             <Select
               value={priorityFilter}
               onChange={setPriorityFilter}

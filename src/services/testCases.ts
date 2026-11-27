@@ -1,13 +1,13 @@
 import { createClient } from '@/lib/supabase/client';
 import type { TestCase, TestPriority } from '@/types/database';
-import { setTagsForTestCase } from '@/services/tags';
+import { getTagsByTestCase, setTagsForTestCase } from '@/services/tags';
 
 export async function getTestCasesByFeature(featureId: string): Promise<TestCase[]> {
   const supabase = createClient();
 
   const { data, error } = await supabase
     .from('test_cases')
-    .select('*')
+    .select('*, test_case_tags(tags(*))')
     .eq('feature_id', featureId)
     .order('created_at', { ascending: false });
 
@@ -16,7 +16,10 @@ export async function getTestCasesByFeature(featureId: string): Promise<TestCase
     throw error;
   }
 
-  return data || [];
+  return (data || []).map((row: any) => ({
+    ...row,
+    tags: (row.test_case_tags || []).map((t: any) => t.tags).filter(Boolean),
+  }));
 }
 
 export async function createTestCase(testCase: {
@@ -46,9 +49,11 @@ export async function createTestCase(testCase: {
 
   if (testCase.tagIds && testCase.tagIds.length > 0) {
     await setTagsForTestCase(data.id, testCase.tagIds);
+    const tags = await getTagsByTestCase(data.id);
+    return { ...data, tags };
   }
 
-  return data;
+  return { ...data, tags: [] };
 }
 
 export async function createTestCasesBulk(
@@ -106,7 +111,8 @@ export async function updateTestCase(
     await setTagsForTestCase(id, testCase.tagIds);
   }
 
-  return data;
+  const tags = await getTagsByTestCase(id);
+  return { ...data, tags };
 }
 
 export async function deleteTestCase(id: string): Promise<void> {
